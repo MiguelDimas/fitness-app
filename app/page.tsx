@@ -1,69 +1,176 @@
-import Image from "next/image";
+"use client";
+import { useState, useEffect } from "react";
+import { collection, addDoc, getDocs, query, where, doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
+import { onAuthStateChanged, signOut, User } from "firebase/auth";
+import { db, auth } from "./lib/firebase";
+import GoalCard from "./components/GoalCard";
+import WorkoutForm from "./components/WorkoutForm";
+import WorkoutList from "./components/WorkoutList";
+import Login from "./components/Login";
+import { Workout } from "./lib/types";
+import { nextGoal, Session, DEFAULT_GOAL, FIXED_GOAL } from "./lib/adaptiveEngine";
 
-export default function Home() {
+type Mode = "fixed" | "adaptive";
+
+function hardestDifficulty(ws: Workout[]): string {
+  if (ws.some((w) => w.diff === "Hard")) return "Hard";
+  if (ws.some((w) => w.diff === "OK")) return "OK";
+  if (ws.some((w) => w.diff === "Easy")) return "Easy";
+  return "OK"; // no workouts logged → neutral default
+}
+
+export default function Dashboard() {
+  const [user, setUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [workouts, setWorkouts] = useState<Workout[]>([]);
+  const [day, setDay] = useState(1);
+  const [goal, setGoal] = useState(DEFAULT_GOAL);
+  const [streak, setStreak] = useState(0);
+  const [points, setPoints] = useState(0);
+  const [mode, setMode] = useState<Mode>("adaptive");
+  const [fixedGoal, setFixedGoal] = useState(FIXED_GOAL);
+  const [motivation, setMotivation] = useState(3);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (u) => { setUser(u); setAuthReady(true); });
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    if (user) loadState(user.uid);
+  }, [user]);
+
+  async function loadState(uid: string) {
+    setLoading(true);
+    const stateRef = doc(db, "adaptiveState", uid);
+    const stateSnap = await getDoc(stateRef);
+    let curDay = 1, curGoal = DEFAULT_GOAL, curStreak = 0, curMode: Mode = "adaptive", curFixed = FIXED_GOAL;
+    if (stateSnap.exists()) {
+      const s = stateSnap.data();
+      curDay = s.currentDay; curGoal = s.currentGoal; curStreak = s.streak;
+      curMode = (s.mode ?? "adaptive") as Mode; curFixed = s.fixedGoal ?? FIXED_GOAL;
+    } else {
+      await setDoc(stateRef, { currentDay: 1, currentGoal: DEFAULT_GOAL, streak: 0, mode: "adaptive", fixedGoal: FIXED_GOAL });
+    }
+    setDay(curDay); setGoal(curGoal); setStreak(curStreak); setMode(curMode); setFixedGoal(curFixed);
+
+    const wSnap = await getDocs(query(
+      collection(db, "workouts"),
+      where("userId", "==", uid),
+      where("dayNumber", "==", curDay)
+    ));
+    const loaded = wSnap.docs.map((d) => d.data() as Workout);
+    setWorkouts(loaded);
+    setPoints(loaded.reduce((sum, w) => sum + w.mins * 10, 0));
+    setLoading(false);
+  }
+
+  const done = workouts.reduce((sum, w) => sum + w.mins, 0);
+
+  async function addWorkout(type: string, mins: number, diff: string) {
+    if (!user) return;
+    const w: Workout = { type, mins, diff };
+    setWorkouts([w, ...workouts]);
+    setPoints((p) => p + mins * 10);
+    await addDoc(collection(db, "workouts"), {
+      ...w, userId: user.uid, dayNumber: day, createdAt: serverTimestamp(),
+    });
+  }
+
+  async function finishDay() {
+    if (!user) return;
+    const achieved = done;
+    const difficulty = hardestDifficulty(workouts);
+    const met = achieved >= goal;
+
+    // log this day — tagged with mode + motivation (your evaluation dataset)
+    await addDoc(collection(db, "days"), {
+      userId: user.uid, dayNumber: day, goal, achieved, difficulty, met,
+      mode, motivation, createdAt: serverTimestamp(),
+    });
+
+    const newStreak = met ? streak + 1 : 0;
+    let newGoal: number;
+    if (mode === "fixed") {
+      newGoal = fixedGoal;                       // fixed mode: goal never changes
+    } else {
+      const daysSnap = await getDocs(query(collection(db, "days"), where("userId", "==", user.uid)));
+      const history: Session[] = daysSnap.docs
+        .map((d) => d.data())
+        .filter((d) => (d.mode ?? "adaptive") === "adaptive")   // adapt only on adaptive days
+        .sort((a, b) => a.dayNumber - b.dayNumber)
+        .map((d) => ({ goal: d.goal, achieved: d.achieved, difficulty: d.difficulty }));
+      newGoal = nextGoal(history, newStreak);
+    }
+
+    await setDoc(doc(db, "adaptiveState", user.uid), {
+      currentDay: day + 1, currentGoal: newGoal, streak: newStreak, mode, fixedGoal,
+    });
+
+    setMotivation(3);
+    await loadState(user.uid);
+  }
+
+  async function switchMode(newMode: Mode) {
+    if (!user) return;
+    const newGoal = newMode === "fixed" ? fixedGoal : goal;
+    await setDoc(doc(db, "adaptiveState", user.uid), {
+      currentDay: day, currentGoal: newGoal, streak, mode: newMode, fixedGoal,
+    });
+    await loadState(user.uid);
+  }
+
+  if (!authReady) return <main className="min-h-screen bg-gray-50 flex items-center justify-center text-gray-400">Loading…</main>;
+  if (!user) return <Login />;
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <main className="min-h-screen bg-gray-50 text-gray-900">
+      <div className="mx-auto max-w-md px-4 py-8 space-y-4">
+        <div className="flex items-center justify-between">
+          <h1 className="text-xl font-semibold">Fitness Tracker · Day {day}</h1>
+          <button onClick={() => signOut(auth)} className="text-sm text-gray-500 hover:text-gray-800">Log out</button>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+
+        {/* mode switch */}
+        <div className="flex rounded-lg bg-gray-100 p-1 text-sm">
+          <button onClick={() => switchMode("fixed")}
+            className={`flex-1 rounded-md px-3 py-1.5 font-medium transition ${mode === "fixed" ? "bg-white shadow text-gray-900" : "text-gray-500"}`}>
+            Fixed
+          </button>
+          <button onClick={() => switchMode("adaptive")}
+            className={`flex-1 rounded-md px-3 py-1.5 font-medium transition ${mode === "adaptive" ? "bg-white shadow text-gray-900" : "text-gray-500"}`}>
+            Adaptive
+          </button>
         </div>
-      </main>
-    </div>
+
+        {loading ? (
+          <p className="text-center text-sm text-gray-400 py-6">Loading…</p>
+        ) : (
+          <>
+            <GoalCard done={done} goal={goal} points={points} streak={streak} />
+            <WorkoutForm onAdd={addWorkout} />
+            <WorkoutList workouts={workouts} />
+
+            {/* motivation + finish day */}
+            <div className="rounded-2xl bg-white shadow-sm border border-gray-200 p-5 space-y-3">
+              <p className="text-sm font-medium text-gray-500">How motivated did you feel today?</p>
+              <div className="flex gap-2">
+                {[1, 2, 3, 4, 5].map((n) => (
+                  <button key={n} onClick={() => setMotivation(n)}
+                    className={`flex-1 rounded-lg border px-3 py-2 text-sm font-medium transition ${motivation === n ? "border-blue-600 bg-blue-50 text-blue-700" : "border-gray-300 text-gray-600"}`}>
+                    {n}
+                  </button>
+                ))}
+              </div>
+              <button onClick={finishDay}
+                className="w-full rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-black transition">
+                Finish day → next goal
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </main>
   );
 }
