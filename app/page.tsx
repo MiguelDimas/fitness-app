@@ -9,6 +9,8 @@ import WorkoutList from "./components/WorkoutList";
 import Login from "./components/Login";
 import { Workout } from "./lib/types";
 import { nextGoal, Session, DEFAULT_GOAL, FIXED_GOAL } from "./lib/adaptiveEngine";
+import BadgeShelf from "./components/BadgeShelf";
+import { earnedBadges, badgeProgress, BadgeProgress } from "./lib/badges";
 
 type Mode = "fixed" | "adaptive";
 
@@ -31,6 +33,8 @@ export default function Dashboard() {
   const [fixedGoal, setFixedGoal] = useState(FIXED_GOAL);
   const [motivation, setMotivation] = useState(3);
   const [loading, setLoading] = useState(true);
+  const [badges, setBadges] = useState<string[]>([]);
+  const [progress, setProgress] = useState<Record<string, BadgeProgress>>({});
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => { setUser(u); setAuthReady(true); });
@@ -54,6 +58,18 @@ export default function Dashboard() {
       await setDoc(stateRef, { currentDay: 1, currentGoal: DEFAULT_GOAL, streak: 0, mode: "adaptive", fixedGoal: FIXED_GOAL });
     }
     setDay(curDay); setGoal(curGoal); setStreak(curStreak); setMode(curMode); setFixedGoal(curFixed);
+
+    const allDaysSnap = await getDocs(query(collection(db, "days"), where("userId", "==", uid)));
+    const allDays = allDaysSnap.docs.map((d) => d.data());
+    const daysCompleted = allDays.filter((d) => d.met).length;
+    const totalMinutes = allDays.reduce((sum, d) => sum + (d.achieved || 0), 0);
+    let bestStreak = 0, run = 0;
+    allDays.sort((a, b) => a.dayNumber - b.dayNumber).forEach((d) => {
+      run = d.met ? run + 1 : 0;
+      if (run > bestStreak) bestStreak = run;
+    });
+    setBadges(earnedBadges({ daysCompleted, bestStreak, totalMinutes }));
+    setProgress(badgeProgress({ daysCompleted, bestStreak, totalMinutes }));
 
     const wSnap = await getDocs(query(
       collection(db, "workouts"),
@@ -149,6 +165,7 @@ export default function Dashboard() {
         ) : (
           <>
             <GoalCard done={done} goal={goal} points={points} streak={streak} />
+            <BadgeShelf earned={badges} progress={progress} />
             <WorkoutForm onAdd={addWorkout} />
             <WorkoutList workouts={workouts} />
 
