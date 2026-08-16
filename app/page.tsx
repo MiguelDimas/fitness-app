@@ -8,17 +8,20 @@ import WorkoutForm from "./components/WorkoutForm";
 import WorkoutList from "./components/WorkoutList";
 import Login from "./components/Login";
 import { Workout } from "./lib/types";
-import { nextGoal, Session, DEFAULT_GOAL, FIXED_GOAL } from "./lib/adaptiveEngine";
+import { nextGoal, Session, DEFAULT_GOAL, FIXED_GOAL, clampGoal } from "./lib/adaptiveEngine";
+import { BanditModel, Arm, contextKey, reward, chooseArm, updateModel } from "./lib/bandit";
 import BadgeShelf from "./components/BadgeShelf";
 import { earnedBadges, badgeProgress, BadgeProgress } from "./lib/badges";
 
 type Mode = "fixed" | "adaptive";
 
+const COLDSTART_DAYS = 2; // first N adaptive days use the rule-based policy; then the bandit takes over
+
 function hardestDifficulty(ws: Workout[]): string {
   if (ws.some((w) => w.diff === "Hard")) return "Hard";
   if (ws.some((w) => w.diff === "OK")) return "OK";
   if (ws.some((w) => w.diff === "Easy")) return "Easy";
-  return "OK"; // no workouts logged → neutral default
+  return "OK";
 }
 
 export default function Dashboard() {
@@ -36,6 +39,11 @@ export default function Dashboard() {
   const [badges, setBadges] = useState<string[]>([]);
   const [progress, setProgress] = useState<Record<string, BadgeProgress>>({});
 
+  // bandit state (persisted per-user on adaptiveState)
+  const [banditModel, setBanditModel] = useState<BanditModel>({});
+  const [pendingArm, setPendingArm] = useState<number | null>(null);
+  const [pendingContext, setPendingContext] = useState<string | null>(null);
+
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => { setUser(u); setAuthReady(true); });
     return () => unsub();
@@ -50,14 +58,20 @@ export default function Dashboard() {
     const stateRef = doc(db, "adaptiveState", uid);
     const stateSnap = await getDoc(stateRef);
     let curDay = 1, curGoal = DEFAULT_GOAL, curStreak = 0, curMode: Mode = "adaptive", curFixed = FIXED_GOAL;
+    let curModel: BanditModel = {}, curPendingArm: number | null = null, curPendingContext: string | null = null;
     if (stateSnap.exists()) {
       const s = stateSnap.data();
       curDay = s.currentDay; curGoal = s.currentGoal; curStreak = s.streak;
       curMode = (s.mode ?? "adaptive") as Mode; curFixed = s.fixedGoal ?? FIXED_GOAL;
+      curModel = s.banditModel ?? {}; curPendingArm = s.pendingArm ?? null; curPendingContext = s.pendingContext ?? null;
     } else {
-      await setDoc(stateRef, { currentDay: 1, currentGoal: DEFAULT_GOAL, streak: 0, mode: "adaptive", fixedGoal: FIXED_GOAL });
+      await setDoc(stateRef, {
+        currentDay: 1, currentGoal: DEFAULT_GOAL, streak: 0, mode: "adaptive", fixedGoal: FIXED_GOAL,
+        banditModel: {}, pendingArm: null, pendingContext: null,
+      });
     }
     setDay(curDay); setGoal(curGoal); setStreak(curStreak); setMode(curMode); setFixedGoal(curFixed);
+    setBanditModel(curModel); setPendingArm(curPendingArm); setPendingContext(curPendingContext);
 
     const allDaysSnap = await getDocs(query(collection(db, "days"), where("userId", "==", uid)));
     const allDays = allDaysSnap.docs.map((d) => d.data());
@@ -100,28 +114,53 @@ export default function Dashboard() {
     const difficulty = hardestDifficulty(workouts);
     const met = achieved >= goal;
 
-    // log this day — tagged with mode + motivation (your evaluation dataset)
+    // log the day (this is your evaluation dataset)
     await addDoc(collection(db, "days"), {
       userId: user.uid, dayNumber: day, goal, achieved, difficulty, met,
       mode, motivation, createdAt: serverTimestamp(),
     });
 
     const newStreak = met ? streak + 1 : 0;
+
     let newGoal: number;
+    let updatedModel = banditModel;
+    let newPendingArm: number | null = null;
+    let newPendingContext: string | null = null;
+
     if (mode === "fixed") {
-      newGoal = fixedGoal;                       // fixed mode: goal never changes
+      newGoal = fixedGoal; // fixed mode never adapts
     } else {
+      // all adaptive days so far (includes the day just logged)
       const daysSnap = await getDocs(query(collection(db, "days"), where("userId", "==", user.uid)));
-      const history: Session[] = daysSnap.docs
+      const adaptiveDays = daysSnap.docs
         .map((d) => d.data())
-        .filter((d) => (d.mode ?? "adaptive") === "adaptive")   // adapt only on adaptive days
-        .sort((a, b) => a.dayNumber - b.dayNumber)
-        .map((d) => ({ goal: d.goal, achieved: d.achieved, difficulty: d.difficulty }));
-      newGoal = nextGoal(history, newStreak);
+        .filter((d) => (d.mode ?? "adaptive") === "adaptive")
+        .sort((a, b) => a.dayNumber - b.dayNumber);
+
+      // 1) LEARN: if the goal we just tested was chosen by the bandit, credit that (context, arm) with its reward
+      if (pendingArm !== null && pendingContext !== null) {
+        const r = reward(met, difficulty);
+        updatedModel = updateModel(banditModel, pendingContext, pendingArm as Arm, r);
+      }
+
+      // 2) DECIDE tomorrow's goal
+      if (adaptiveDays.length <= COLDSTART_DAYS) {
+        // COLD START: use the rule-based policy while the bandit has too little data
+        const history: Session[] = adaptiveDays.map((d) => ({ goal: d.goal, achieved: d.achieved, difficulty: d.difficulty }));
+        newGoal = nextGoal(history, newStreak);
+      } else {
+        // BANDIT: choose an adjustment for tomorrow based on today's context, then apply it
+        const ctx = contextKey(met, difficulty);
+        const arm = chooseArm(updatedModel, ctx);
+        newGoal = clampGoal(goal + arm);
+        newPendingArm = arm;       // remember what we chose so we can credit it tomorrow
+        newPendingContext = ctx;
+      }
     }
 
     await setDoc(doc(db, "adaptiveState", user.uid), {
       currentDay: day + 1, currentGoal: newGoal, streak: newStreak, mode, fixedGoal,
+      banditModel: updatedModel, pendingArm: newPendingArm, pendingContext: newPendingContext,
     });
 
     setMotivation(3);
@@ -133,6 +172,7 @@ export default function Dashboard() {
     const newGoal = newMode === "fixed" ? fixedGoal : goal;
     await setDoc(doc(db, "adaptiveState", user.uid), {
       currentDay: day, currentGoal: newGoal, streak, mode: newMode, fixedGoal,
+      banditModel, pendingArm, pendingContext,
     });
     await loadState(user.uid);
   }
@@ -148,7 +188,6 @@ export default function Dashboard() {
           <button onClick={() => signOut(auth)} className="text-sm text-gray-500 hover:text-gray-800">Log out</button>
         </div>
 
-        {/* mode switch */}
         <div className="flex rounded-lg bg-gray-100 p-1 text-sm">
           <button onClick={() => switchMode("fixed")}
             className={`flex-1 rounded-md px-3 py-1.5 font-medium transition ${mode === "fixed" ? "bg-white shadow text-gray-900" : "text-gray-500"}`}>
@@ -169,7 +208,6 @@ export default function Dashboard() {
             <WorkoutForm onAdd={addWorkout} />
             <WorkoutList workouts={workouts} />
 
-            {/* motivation + finish day */}
             <div className="rounded-2xl bg-white shadow-sm border border-gray-200 p-5 space-y-3">
               <p className="text-sm font-medium text-gray-500">How motivated did you feel today?</p>
               <div className="flex gap-2">
