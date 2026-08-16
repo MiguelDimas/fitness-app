@@ -15,7 +15,7 @@ import { earnedBadges, badgeProgress, BadgeProgress } from "./lib/badges";
 
 type Mode = "fixed" | "adaptive";
 
-const COLDSTART_DAYS = 2; // first N adaptive days use the rule-based policy; then the bandit takes over
+const COLDSTART_DAYS = 2;
 
 function hardestDifficulty(ws: Workout[]): string {
   if (ws.some((w) => w.diff === "Hard")) return "Hard";
@@ -38,8 +38,6 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [badges, setBadges] = useState<string[]>([]);
   const [progress, setProgress] = useState<Record<string, BadgeProgress>>({});
-
-  // bandit state (persisted per-user on adaptiveState)
   const [banditModel, setBanditModel] = useState<BanditModel>({});
   const [pendingArm, setPendingArm] = useState<number | null>(null);
   const [pendingContext, setPendingContext] = useState<string | null>(null);
@@ -114,46 +112,39 @@ export default function Dashboard() {
     const difficulty = hardestDifficulty(workouts);
     const met = achieved >= goal;
 
-    // log the day (this is your evaluation dataset)
     await addDoc(collection(db, "days"), {
       userId: user.uid, dayNumber: day, goal, achieved, difficulty, met,
       mode, motivation, createdAt: serverTimestamp(),
     });
 
     const newStreak = met ? streak + 1 : 0;
-
     let newGoal: number;
     let updatedModel = banditModel;
     let newPendingArm: number | null = null;
     let newPendingContext: string | null = null;
 
     if (mode === "fixed") {
-      newGoal = fixedGoal; // fixed mode never adapts
+      newGoal = fixedGoal;
     } else {
-      // all adaptive days so far (includes the day just logged)
       const daysSnap = await getDocs(query(collection(db, "days"), where("userId", "==", user.uid)));
       const adaptiveDays = daysSnap.docs
         .map((d) => d.data())
         .filter((d) => (d.mode ?? "adaptive") === "adaptive")
         .sort((a, b) => a.dayNumber - b.dayNumber);
 
-      // 1) LEARN: if the goal we just tested was chosen by the bandit, credit that (context, arm) with its reward
       if (pendingArm !== null && pendingContext !== null) {
         const r = reward(met, difficulty);
         updatedModel = updateModel(banditModel, pendingContext, pendingArm as Arm, r);
       }
 
-      // 2) DECIDE tomorrow's goal
       if (adaptiveDays.length <= COLDSTART_DAYS) {
-        // COLD START: use the rule-based policy while the bandit has too little data
         const history: Session[] = adaptiveDays.map((d) => ({ goal: d.goal, achieved: d.achieved, difficulty: d.difficulty }));
         newGoal = nextGoal(history, newStreak);
       } else {
-        // BANDIT: choose an adjustment for tomorrow based on today's context, then apply it
         const ctx = contextKey(met, difficulty);
         const arm = chooseArm(updatedModel, ctx);
         newGoal = clampGoal(goal + arm);
-        newPendingArm = arm;       // remember what we chose so we can credit it tomorrow
+        newPendingArm = arm;
         newPendingContext = ctx;
       }
     }
@@ -177,24 +168,26 @@ export default function Dashboard() {
     await loadState(user.uid);
   }
 
-  if (!authReady) return <main className="min-h-screen bg-gray-50 flex items-center justify-center text-gray-400">Loading…</main>;
+  if (!authReady) return <main className="min-h-screen bg-gradient-to-b from-blue-50 to-purple-50 flex items-center justify-center text-gray-400">Loading…</main>;
   if (!user) return <Login />;
 
   return (
-    <main className="min-h-screen bg-gray-50 text-gray-900">
+    <main className="min-h-screen bg-gradient-to-b from-blue-50 to-purple-50 text-gray-900">
       <div className="mx-auto max-w-md px-4 py-8 space-y-4">
         <div className="flex items-center justify-between">
-          <h1 className="text-xl font-semibold">Fitness Tracker · Day {day}</h1>
+          <h1 className="text-xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
+            Fitness Tracker · Day {day}
+          </h1>
           <button onClick={() => signOut(auth)} className="text-sm text-gray-500 hover:text-gray-800">Log out</button>
         </div>
 
-        <div className="flex rounded-lg bg-gray-100 p-1 text-sm">
+        <div className="flex rounded-lg bg-white/70 p-1 text-sm shadow-sm">
           <button onClick={() => switchMode("fixed")}
-            className={`flex-1 rounded-md px-3 py-1.5 font-medium transition ${mode === "fixed" ? "bg-white shadow text-gray-900" : "text-gray-500"}`}>
+            className={`flex-1 rounded-md px-3 py-1.5 font-medium transition ${mode === "fixed" ? "bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow" : "text-gray-500"}`}>
             Fixed
           </button>
           <button onClick={() => switchMode("adaptive")}
-            className={`flex-1 rounded-md px-3 py-1.5 font-medium transition ${mode === "adaptive" ? "bg-white shadow text-gray-900" : "text-gray-500"}`}>
+            className={`flex-1 rounded-md px-3 py-1.5 font-medium transition ${mode === "adaptive" ? "bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow" : "text-gray-500"}`}>
             Adaptive
           </button>
         </div>
@@ -219,7 +212,7 @@ export default function Dashboard() {
                 ))}
               </div>
               <button onClick={finishDay}
-                className="w-full rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-black transition">
+                className="w-full rounded-lg bg-gradient-to-r from-blue-600 to-purple-600 px-4 py-2 text-sm font-medium text-white hover:opacity-90 transition">
                 Finish day → next goal
               </button>
             </div>

@@ -64,7 +64,7 @@ export default function WorkoutForm({ onAdd }: WorkoutFormProps) {
 
       <button
         onClick={submit}
-        className="w-full rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 transition"
+        className="w-full rounded-lg bg-gradient-to-r from-blue-600 to-purple-600 px-4 py-2 text-sm font-medium text-white hover:opacity-90 transition"
       >
         Add workout
       </button>
