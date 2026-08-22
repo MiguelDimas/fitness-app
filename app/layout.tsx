@@ -15,6 +15,8 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Fitness Tracker",
   description: "An AI-powered gamified fitness app with adaptive goals",
+  manifest: "/manifest.json",
+  themeColor: "#2E74B5",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
