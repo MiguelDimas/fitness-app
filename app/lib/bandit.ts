@@ -1,8 +1,3 @@
-// Contextual epsilon-greedy bandit for adaptive goal-setting.
-// ARMS = goal adjustments (minutes). CONTEXT = met? + difficulty.
-// REWARD = 1 completed comfortably, 0.5 completed but Hard, 0 missed.
-// Picks the best-average arm most of the time (exploit), random arm epsilon of the time (explore).
-
 export const ARMS = [-5, 0, 5, 10] as const;
 export type Arm = (typeof ARMS)[number];
 
