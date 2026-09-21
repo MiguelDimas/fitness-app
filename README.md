@@ -5,7 +5,7 @@ An installable web app that uses AI-driven adaptive difficulty to help users sta
 Built as part of the QHO656 Dissertation Project at Southampton Solent University: "Design and Evaluation of an AI-Powered Gamified Fitness App for Improving Exercise Adherence."
 
 Features
-Adaptive goal engine a contextual bandit with a rule-based cold-start policy that personalises daily targets based on user context and history.
+Adaptive goal engine — a contextual bandit with a rule-based cold-start policy that personalises daily targets based on user context and history.
 Gamification — progress tracking and game-like feedback to encourage regular use.
 User accounts — sign-up and login via Firebase Authentication.
 Cloud data — activity logs and user data stored in Firebase Firestore.
