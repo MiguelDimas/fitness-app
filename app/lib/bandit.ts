@@ -19,7 +19,7 @@ export function reward(met: boolean, difficulty: string): number {
 export function chooseArm(model: BanditModel, ctx: string): Arm {
   const stats = model[ctx] ?? {};
   if (Math.random() < EPSILON) {
-    return ARMS[Math.floor(Math.random() * ARMS.length)]; // explore
+    return ARMS[Math.floor(Math.random() * ARMS.length)]; 
   }
   let best: Arm = 0;
   let bestAvg = -1;
@@ -28,14 +28,14 @@ export function chooseArm(model: BanditModel, ctx: string): Arm {
     const avg = s ? s.avgReward : 0;
     if (avg > bestAvg) { bestAvg = avg; best = arm; }
   }
-  return best; // exploit
+  return best; 
 }
 
 export function updateModel(model: BanditModel, ctx: string, arm: Arm, r: number): BanditModel {
   const next: BanditModel = { ...model, [ctx]: { ...(model[ctx] ?? {}) } };
   const prev = next[ctx][String(arm)] ?? { count: 0, avgReward: 0 };
   const count = prev.count + 1;
-  const avgReward = prev.avgReward + (r - prev.avgReward) / count; // incremental average
+  const avgReward = prev.avgReward + (r - prev.avgReward) / count; 
   next[ctx][String(arm)] = { count, avgReward };
   return next;
 }
